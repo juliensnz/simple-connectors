@@ -1,0 +1,8 @@
+services:
+    acme_xs.processor.import:
+        class: Acme\Bundle\XSConnectorBundle\Processor\ImportProcessor
+        arguments:
+            - @pim_catalog.doctrine.query.product_query_factory
+            - @pim_catalog.updater.product
+            - @pim_catalog.manager.product
+            - @pim_catalog.object_manager.product

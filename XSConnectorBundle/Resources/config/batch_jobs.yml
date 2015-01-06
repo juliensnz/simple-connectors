@@ -1,0 +1,12 @@
+connector:
+    name: Extra simple Connector
+    jobs:
+        extra_small_product_import:
+            title: My extra simple product import
+            type:  import
+            steps:
+                import_extra_simple_products:
+                    title:     Import extra simple products
+                    class: Acme\Bundle\XSConnectorBundle\Step\Step
+                    services:
+                        processor: acme_xs.processor.import
