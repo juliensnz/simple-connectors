@@ -2,16 +2,19 @@
 
 namespace Acme\Bundle\XSConnectorBundle\Processor;
 
-use Akeneo\Bundle\BatchBundle\Item\ItemProcessorInterface;
-use Symfony\Component\HttpFoundation\File\File;
 use Akeneo\Bundle\BatchBundle\Entity\StepExecution;
 use Akeneo\Bundle\BatchBundle\Item\AbstractConfigurableStepElement;
+use Akeneo\Bundle\BatchBundle\Item\InvalidItemException;
+use Akeneo\Bundle\BatchBundle\Item\ItemProcessorInterface;
 use Akeneo\Bundle\BatchBundle\Item\UploadedFileAwareInterface;
 use Akeneo\Bundle\BatchBundle\Step\StepExecutionAwareInterface;
-use Symfony\Component\Validator\Constraints as Assert;
-use Pim\Bundle\CatalogBundle\Doctrine\Query\ProductQueryFactoryInterface;
-use Pim\Bundle\CatalogBundle\Updater\ProductUpdaterInterface;
+use Akeneo\Component\StorageUtils\Saver\SaverInterface;
 use Pim\Bundle\CatalogBundle\Manager\ProductManager;
+use Pim\Bundle\CatalogBundle\Query\ProductQueryBuilderFactoryInterface;
+use Pim\Bundle\CatalogBundle\Updater\ProductUpdaterInterface;
+use Symfony\Component\HttpFoundation\File\File;
+use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\ValidatorInterface;
 
 /**
  * Basic step implementation that simply run an import item step
@@ -33,8 +36,8 @@ class ImportProcessor extends AbstractConfigurableStepElement implements
     /** @var StepExecution */
     protected $stepExecution;
 
-    /** @var ProductQueryFactoryInterface */
-    protected $productQueryFactory;
+    /** @var ProductQueryBuilderFactoryInterface */
+    protected $pdbFactory;
 
     /** @var ProductUpdaterInterface */
     protected $productUpdater;
@@ -42,19 +45,24 @@ class ImportProcessor extends AbstractConfigurableStepElement implements
     /** @var ProductManager */
     protected $productManager;
 
-    /** @var mixed */
-    protected $objectManager;
+    /** @var SaverInterface */
+    protected $productSaver;
+
+    /** @var ValidatorInterface */
+    protected $validator;
 
     public function __construct(
-        ProductQueryFactoryInterface $productQueryFactory,
+        ProductQueryBuilderFactoryInterface $pdbFactory,
         ProductUpdaterInterface $productUpdater,
         ProductManager $productManager,
-        $objectManager
+        SaverInterface $productSaver,
+        ValidatorInterface $validator
     ) {
-        $this->productQueryFactory = $productQueryFactory;
-        $this->productUpdater      = $productUpdater;
-        $this->productManager      = $productManager;
-        $this->objectManager       = $objectManager;
+        $this->pdbFactory     = $pdbFactory;
+        $this->productUpdater = $productUpdater;
+        $this->productManager = $productManager;
+        $this->productSaver   = $productSaver;
+        $this->validator      = $validator;
     }
 
     public function process()
@@ -65,33 +73,48 @@ class ImportProcessor extends AbstractConfigurableStepElement implements
         $header = explode(';', reset($lines));
         array_shift($lines);
 
+        $identifier = $this->productManager->getIdentifierAttribute();
+
         foreach ($lines as $line) {
             if ('' !== $line) {
                 $item = array_combine($header, explode(';', $line));
 
-                $product = $this->productQueryFactory
+                $product = $this->pdbFactory
                     ->create(['default_locale' => 'en_US', 'default_scope' => 'ecommerce'])
-                    ->addFilter('sku', '=', $item['sku'])
+                    ->addFilter($identifier->getCode(), '=', $item[$identifier->getCode()])
                     ->getQueryBuilder()
                     ->getQuery()
                     ->execute();
 
                 $product = reset($product);
 
-                if (null === $product) {
+                if (false === $product) {
                     $product = $this->productManager->createProduct();
+
+                    $identifierValue = $this->productManager->createProductValue();
+                    $identifierValue->setAttribute($this->productManager->getIdentifierAttribute());
+                    $identifierValue->setData($item[$identifier->getCode()]);
+
+                    $product->addValue($identifierValue);
                 }
 
                 foreach ($item as $key => $value) {
-                    if ('sku' != $key) {
-                        $this->productUpdater->setValue([$product], $key, $value);
+                    $columnInfo = $this->getColumnInfo($key);
+
+                    if ($identifier->getCode() != $columnInfo['code'] && '' !== $value) {
+                        $this->productUpdater->setValue(
+                            [$product],
+                            $columnInfo['code'],
+                            $value,
+                            $columnInfo['locale'],
+                            $columnInfo['scope']
+                        );
                     }
                 }
 
+                $this->productSaver->save($product);
                 $this->stepExecution->incrementSummaryInfo('product_imported');
             }
-
-            $this->objectManager->flush();
         }
     }
 
@@ -162,5 +185,34 @@ class ImportProcessor extends AbstractConfigurableStepElement implements
                 )
             )
         ];
+    }
+
+    protected function getColumnInfo($column)
+    {
+        $infos = explode('-', $column);
+
+        $columnInfos = [
+            'locale' => null,
+            'scope'  => null
+        ];
+
+        switch (count($infos)) {
+            case 1:
+                $columnInfos['code'] = $infos[0];
+                break;
+            case 2:
+                $columnInfos['code']   = $infos[0];
+                $columnInfos['locale'] = false === strpos($infos[1], '_') ? null : $infos[1];
+                $columnInfos['scope']  = false === strpos($infos[1], '_') ? $infos[1] : null;
+
+                break;
+            case 3:
+                $columnInfos['code']   = $infos[0];
+                $columnInfos['locale'] = $infos[1];
+                $columnInfos['scope']  = $infos[2];
+                break;
+        }
+
+        return $columnInfos;
     }
 }
